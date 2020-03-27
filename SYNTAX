@@ -1,0 +1,241 @@
+In general, the assembler is case, whitespace, and semicolon insensitive.
+
+A small but important note:
+Using data[xreg] or coeff[yreg] in an expression does not address memory with the contents of the
+xreg/yreg as the address. It actually just returns the contents of the respective reg. To address
+memory you need to use a numerical address with register index. For example, you could write
+data[0+xreg] or coeff[0+yreg] to actually use the contents of the reg as an address.
+
+--- Preprocessor directives ---
+START_CELL
+#define_data
+#define_nonmodulo_data
+#define_spi_coeff
+#auto_set
+#auto_nonmodulo_set
+#increment_autocoeff
+#auto_report
+#set_shiftreg_len
+#end_set_shiftreg
+#auto
+#auto_nonmodulo
+#write_trap_file
+
+--- Instruction grammar ---
+ConditionSelect := "acc0_gte_0" | "acc0_gte_acc1" | "acc0_lte_acc1" | "acc0_gt_acc1"
+                   | "acc0_eq_acc1" | "acc0_lte_0" | "acc0_eq_0" | "acc0_gt_0"
+MuxControlNoZero := "accum0" | "accum1" | "accum2" | "ser_port" | "accum0_and_xreg"
+                    | "accum0_or_xreg" | "accum0_xor_xreg" | "accum0_abs"
+                    | "accum0_shiftleft23" | "accum0_shiftright23" | "db"
+MuxControl := "0" | MuxControlNoZero
+
+// ramadr = RAMAddr
+// romadr = 0
+// reg_destination = 7 (data)
+// MUX = MuxControlNoZero or MuxControl
+// use_yreg_offset = 0
+// use_xreg_offset = 1 if "+xreg"
+// subtract = 0
+// skip_on_condition = 1 if "skip"
+// swap_on_condition = 1 if "swap"
+// ucr = 0
+// condition_mpy_eq = 1 or ConditionSelect
+RamWrite := "data[" RAMAddr "+xreg"? "]" "=" (MuxControlNoZero | MuxControl ("skip" | "swap")? ConditionSelect)
+
+// ramadr = 0
+// romadr = 0
+// reg_destination = 0
+// MUX = 0
+// use_yreg_offset = 0
+// use_xreg_offset = 0
+// subtract = 0
+// skip_on_condition = 0
+// swap_on_condition = 0
+// ucr = 0
+// condition_mpy_eq = 1
+Nop := "nop"
+
+RegDest := "accum0" | "accum1" | "accum2" | "dbreg"
+
+// ramadr = RAMAddr
+// romadr = ROMAddr, add 64 if "update_slew"
+// reg_destination = RegDest
+// MUX = MuxControl
+// use_yreg_offset = 1 if "+yreg"
+// use_xreg_offset = 1 if "+xreg"
+// subtract = 1 if "-"
+// skip_on_condition = 1 if "skip"
+// swap_on_condition = 0
+// ucr = 1 if "ucr"
+// condition_mpy_eq = 1
+MultAccum := RegDest "=" MuxControl ("+" | "-") "coeff[" ROMAddr "+yreg"? "]" "*" "data[" RAMAddr "+xreg"? "]" ("ucr" | "skip" | "update_slew")? ConditionSelect?
+
+SourceReg := "accum0" | "accum1" | "accum2" | "ser_port" | "accum0_and_xreg" | "accum0_or_xreg"
+             | "accum0_xor_xreg" | "accum0_abs" | "accum0_shiftleft23" | "accum0_shiftright23"
+DigOutAddr := 0 to 99
+
+// ramadr = 8165 + DigAddr
+// romadr = 0
+// reg_destination = 0
+// MUX = SourceReg
+// use_yreg_offset = 0
+// use_xreg_offset = 0
+// subtract = 0
+// skip_on_condition = 0
+// swap_on_condition = 0
+// ucr = 0
+// condition_mpy_eq = 1
+DigOut := "digout[" DigOutAddr "]" "=" SourceReg
+
+RegOutAddr := "INTFACE_0" to "INTFACE_7" | "GPIO_0" to "GPIO_11" | "GPIO_ALL"
+
+// ramadr = RegOutAddr
+// romadr = 0
+// reg_destination = 0
+// MUX = SourceReg
+// use_yreg_offset = 0
+// use_xreg_offset = 0
+// subtract = 0
+// skip_on_condition = 0
+// swap_on_condition = 0
+// ucr = 0
+// condition_mpy_eq = 1
+RegOut := "regout[" RegOutAddr "]" "=" SourceReg
+
+// ramadr = 0 or RAMAddr
+// romadr = 0 or ROMAddr
+// reg_destination = 5 if "xreg", 6 if "yreg"
+// MUX = 0
+// use_yreg_offset = 1 if "+yreg"
+// use_xreg_offset = 1 if "+xreg"
+// subtract = 0
+// skip_on_condition = 0
+// swap_on_condition = 0
+// ucr = 0
+// condition_mpy_eq = 1
+XregInst := "xreg" "=" "coeff[" ROMAddr "+yreg"? "]"
+YregInst := "yreg" "=" "data[" RAMAddr "+xreg"? "]"
+RegInst := XregInst | YregInst
+
+--- Pipeline hazards ---
+MultAccum with MUX=x
+RamWrite with MUX=x
+RamWrite with MUX=x
+Must insert Nop after MultAccum
+
+MultAccum with RegDest=x
+RamWrite with MUX=x
+RamWrite with MUX=x
+Must insert Nop after MultAccum
+
+MultAccum
+RamWrite
+RamWrite
+Must insert Nop after MultAccum
+
+Any with "update_slew"
+Any
+Any with "update_slew"
+Must insert another Nop between first and third insns
+
+XregInst
+Any with use_xreg_offset
+Must insert Nop after XregInst
+
+YregInst
+Any with use_yreg_offset
+Must insert Nop after YregInst
+
+RamWrite with ConditionUpdateBits (bits[5:0]) > 1 and ramadr=x
+Any with ramadr=x
+Must insert Nop after RamWrite
+
+MultAccum with ucr=1
+RamWrite with skip=1 or swap=1
+Must insert Nop after MultAccum
+
+MultAccum
+Any with MUX=accum0_abs (8)
+Must insert Nop after MultAccum
+
+--- ROM address macros ---
+0    : SIN_0
+1    : SIN_1
+...
+259  : SIN_259
+260  : 2_POW_P4 (plus)
+261  : 2_POW_P3
+...
+264  : 2_POW_P0
+
+265  : 2_POW_M1 (minus)
+266  : 2_POW_M2
+...
+287  : 2_POW_M23
+1536 : INTFACE_0
+1537 : INTFACE_1
+...
+1543 : INTFACE_7
+1544 : GPIO_0
+1545 : GPIO_1
+...
+1555 : GPIO_11
+1556 : GPIO_ALL
+1557 : AUX_ADC_0
+1558 : AUX_ADC_1
+1559 : AUX_ADC_2
+1560 : AUX_ADC_3
+2047 : yreg
+
+--- RAM address macros ---
+8187 : ext_mem
+8188 : xreg
+8189 : ZERO
+8190 : ONE
+8191 : 2M23
+
+--- Instruction bitfields ---
+bits[39:27] : ramadr            : RAM address
+bits[26:16] : romadr            : ROM address
+bits[15:13] : reg_destination   : destination reg
+bits[12:9]  : MUX               : source mux select
+bits[8]     : use_yreg_offset   : yreg index ROM address enable
+bits[7]     : use_xreg_offset   : xreg index RAM address enable
+bits[6]     : subtract          : subtract (subtract)
+bits[5]     : skip_on_condition : skip instruction if condition true
+bits[4]     : swap_on_condition : swap (?) if condition true
+bits[3]     : ucr               : set condition flags
+bits[2:0]   : condition_mpy_eq  : condition code
+
+--- Condition code values ---
+0 : acc0_gte_0
+1 : acc0_gte_acc1
+2 : acc0_lte_acc1
+3 : acc0_gt_acc1
+4 : acc0_eq_acc1
+5 : acc0_lte_0
+6 : acc0_eq_0
+7 : acc0_gt_0
+
+--- Destination reg values ---
+1 : accum0
+2 : accum1
+3 : accum2
+4 : dbreg
+5 : xreg
+6 : yreg
+7 : data
+
+--- Mux select values ---
+0  : 0
+1  : accum0
+2  : accum1
+3  : accum2
+4  : ser_port
+5  : accum0_and_xreg
+6  : accum0_or_xreg
+7  : accum0_xor_xreg
+8  : accum0_abs
+9  : accum0_shiftleft23
+10 : accum0_shiftright23
+11 : db
